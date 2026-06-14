@@ -1,0 +1,474 @@
+using UnityEngine;
+using UnityEngine.InputSystem;
+using UnityEngine.UI;
+using TMPro;
+
+// Attach to any empty GameObject in the scene ("JournalManager").
+// Builds the entire journal UI in code — no prefab or scene Canvas needed.
+// One entry is displayed per page; left/right arrows navigate between unlocked pages.
+public class JournalManager : MonoBehaviour
+{
+    private const string cursorReason = "JournalUI";
+    // Singleton — other scripts call JournalManager.instance.UnlockNextPage()
+    public static JournalManager instance;
+
+    [SerializeField] private TMP_FontAsset journalFont; // Assign Caveat-Regular SDF in Inspector
+    [SerializeField] private AudioClip pageTurnSound;   // Played when navigating between pages
+
+    [Header("Journal Entries")]
+    [SerializeField] private string entry1 = "The island is not done with you. Start at the tower: find the fuel hidden there. The boat is broken, and its pieces are scattered around the island. Fuel first, then the pieces, then the way out.";
+    [SerializeField] private string entry2 = "I hid the rudder where the trees swallow the light";
+    [SerializeField] private string entry3 = "The mast rolled down toward the rocky cliff side";
+    [SerializeField] private string entry4 = "The plank is near the old stone ruins, half buried";
+    [SerializeField] private string entry5 = "The engine sank into the cursed stones to the north.\nSolve their pattern and it will be yours.\nNo two connected stones can share the same color.";
+    [SerializeField] private string entry6 = "The boat is ready. Return with fuel before the storm takes you.";
+    [SerializeField] private string entry7 = "The storm is here. Leave now.";
+
+    // Aged-journal colour palette
+    private static readonly Color paperColor        = new Color(0.769f, 0.635f, 0.396f, 0.93f); // #C4A265 parchment
+    private static readonly Color inkColor          = new Color(0.13f,  0.07f,  0.02f,  1.00f); // dark brown ink
+    private static readonly Color titleColor        = new Color(0.10f,  0.05f,  0.01f,  1.00f); // near-black title
+    private static readonly Color buttonActiveColor = new Color(0.12f,  0.07f,  0.02f,  0.75f); // arrow button when usable
+    private static readonly Color buttonDimColor    = new Color(0.12f,  0.07f,  0.02f,  0.18f); // arrow button when at boundary
+
+    // UI element references — all created by BuildUI()
+    private GameObject       journalPanel;
+    private GameObject       hintObject;
+    private TextMeshProUGUI  entryText;       // body text for the current page
+    private TextMeshProUGUI  pageIndicator;   // "Page X / Y unlocked"
+    private Button           leftButton;
+    private Button           rightButton;
+    private Image            leftButtonImage;  // cached to tint on enable/disable
+    private Image            rightButtonImage;
+    private TextMeshProUGUI  leftArrowLabel;   // "<" symbol
+    private TextMeshProUGUI  rightArrowLabel;  // ">" symbol
+
+    private bool isOpen;
+    private int  currentPage   = 0; // 0-indexed; which page is currently displayed
+    private int  unlockedCount = 1; // entry 1 is always accessible; incremented by UnlockNextPage()
+
+    public TMP_FontAsset JournalFont
+    {
+        get { return journalFont; }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Lifecycle
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void Awake()
+    {
+        // Enforce singleton; destroy any duplicate that enters the scene
+        if (instance != null && instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+        instance = this;
+
+        // Build all UI immediately so references are ready before any Start() runs
+        BuildUI();
+        unlockedCount = Mathf.Clamp(PlayerData.journalUnlockedPages, 1, 7);
+    }
+
+    private void Update()
+    {
+        if (Keyboard.current == null)
+            return;
+
+        // J key toggles the journal open and closed
+        if (Keyboard.current.jKey.wasPressedThisFrame)
+            ToggleJournal();
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Public API
+    // ─────────────────────────────────────────────────────────────────────
+
+    // Called by BoatPieceManager each time a piece is collected.
+    // Unlocks the next page; locked pages are never accessible via the arrows.
+    public void UnlockNextPage()
+    {
+        if (unlockedCount >= 7)
+            return;
+
+        unlockedCount++;
+        PlayerData.UnlockJournalPage(unlockedCount);
+
+        // Refresh display now in case the journal is currently open
+        RefreshDisplay();
+    }
+
+    public void UnlockPage(int pageNumber)
+    {
+        int clampedPage = Mathf.Clamp(pageNumber, 1, 7);
+        if (unlockedCount >= clampedPage)
+            return;
+
+        unlockedCount = clampedPage;
+        PlayerData.UnlockJournalPage(unlockedCount);
+        RefreshDisplay();
+    }
+
+    public string GetCurrentClue()
+    {
+        return GetEntry(Mathf.Clamp(unlockedCount, 1, 7));
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  Internal helpers
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void ToggleJournal()
+    {
+        isOpen = !isOpen;
+
+        // Panel visible while open; hint label visible while closed
+        journalPanel.SetActive(isOpen);
+        hintObject.SetActive(!isOpen);
+
+        if (isOpen)
+            GameplayCursorState.RequestUnlockedCursor(cursorReason);
+        else
+            GameplayCursorState.ReleaseUnlockedCursor(cursorReason);
+
+        // Sync all display elements whenever the journal is opened
+        if (isOpen)
+            RefreshDisplay();
+    }
+
+    private void OnDisable()
+    {
+        GameplayCursorState.ReleaseUnlockedCursor(cursorReason);
+    }
+
+    private void OnDestroy()
+    {
+        GameplayCursorState.ReleaseUnlockedCursor(cursorReason);
+    }
+
+    // Moves to an adjacent page; direction is -1 (left) or +1 (right)
+    private void NavigatePage(int direction)
+    {
+        int target = currentPage + direction;
+
+        // Guard: do not navigate outside the unlocked range
+        if (target < 0 || target >= unlockedCount)
+            return;
+
+        currentPage = target;
+        PlayPageTurn();
+        RefreshDisplay();
+    }
+
+    private void PlayPageTurn()
+    {
+        if (pageTurnSound == null)
+            return;
+
+        // PlayClipAtPoint creates its own temporary AudioSource — no component needed
+        Vector3 pos = Camera.main != null ? Camera.main.transform.position : Vector3.zero;
+        AudioSource.PlayClipAtPoint(pageTurnSound, pos);
+    }
+
+    // Syncs entryText, pageIndicator, and both arrow button states to current values
+    private void RefreshDisplay()
+    {
+        // Show the entry for the current 1-based page number
+        entryText.text = GetEntry(currentPage + 1);
+
+        // e.g. "Page 2 / 4 unlocked"
+        pageIndicator.text = $"Page {currentPage + 1} / {unlockedCount} unlocked";
+
+        // Left arrow active only when not already on the first page
+        bool canLeft  = currentPage > 0;
+        bool canRight = currentPage < unlockedCount - 1;
+
+        leftButton.interactable  = canLeft;
+        leftButtonImage.color    = canLeft  ? buttonActiveColor : buttonDimColor;
+        leftArrowLabel.color     = canLeft  ? inkColor : new Color(inkColor.r, inkColor.g, inkColor.b, 0.25f);
+
+        rightButton.interactable = canRight;
+        rightButtonImage.color   = canRight ? buttonActiveColor : buttonDimColor;
+        rightArrowLabel.color    = canRight ? inkColor : new Color(inkColor.r, inkColor.g, inkColor.b, 0.25f);
+    }
+
+    // Returns the serialized entry string for a given 1-based page number
+    private string GetEntry(int pageNumber)
+    {
+        switch (pageNumber)
+        {
+            case 1: return entry1;
+            case 2: return entry2;
+            case 3: return entry3;
+            case 4: return entry4;
+            case 5: return entry5;
+            case 6: return entry6;
+            case 7: return entry7;
+            default: return string.Empty;
+        }
+    }
+
+    // ─────────────────────────────────────────────────────────────────────
+    //  UI construction — everything built entirely in code
+    // ─────────────────────────────────────────────────────────────────────
+
+    private void BuildUI()
+    {
+        // Root canvas — Screen Space Overlay renders above all world objects
+        GameObject canvasObj = new GameObject("JournalCanvas");
+        canvasObj.transform.SetParent(transform, false);
+
+        Canvas canvas       = canvasObj.AddComponent<Canvas>();
+        canvas.renderMode   = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 50;
+
+        CanvasScaler scaler        = canvasObj.AddComponent<CanvasScaler>();
+        scaler.uiScaleMode         = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(1920f, 1080f);
+        scaler.matchWidthOrHeight  = 0.5f;
+
+        canvasObj.AddComponent<GraphicRaycaster>();
+
+        // Corner reminder visible while journal is closed
+        hintObject = BuildHintLabel(canvasObj.transform);
+
+        // Parchment journal card — hidden until J is pressed
+        journalPanel = BuildJournalPanel(canvasObj.transform);
+        journalPanel.SetActive(false);
+    }
+
+    // Small italic "J — Journal" label anchored to the bottom-left corner
+    private GameObject BuildHintLabel(Transform parent)
+    {
+        GameObject obj = new GameObject("JournalHint");
+        obj.transform.SetParent(parent, false);
+
+        TextMeshProUGUI label = obj.AddComponent<TextMeshProUGUI>();
+        label.text      = "J  —  Journal";
+        label.fontSize  = 20f;
+        label.fontStyle = FontStyles.Italic;
+        label.color     = new Color(1f, 1f, 1f, 0.55f);
+        label.alignment = TextAlignmentOptions.BottomLeft;
+        if (journalFont != null) label.font = journalFont;
+
+        RectTransform rt    = obj.GetComponent<RectTransform>();
+        rt.anchorMin        = Vector2.zero;
+        rt.anchorMax        = Vector2.zero;
+        rt.pivot            = Vector2.zero;
+        rt.anchoredPosition = new Vector2(20f, 20f);
+        rt.sizeDelta        = new Vector2(260f, 44f);
+
+        return obj;
+    }
+
+    // Assembles the full journal panel: background, title, divider, entry text,
+    // two navigation arrows, and the page indicator label
+    private GameObject BuildJournalPanel(Transform parent)
+    {
+        GameObject panel = new GameObject("JournalPanel");
+        panel.transform.SetParent(parent, false);
+
+        // Parchment background — use Unity's built-in rounded-rect sprite when available
+        Image bg = panel.AddComponent<Image>();
+        bg.color = paperColor;
+
+        RectTransform panelRT    = panel.GetComponent<RectTransform>();
+        panelRT.anchorMin        = new Vector2(0.5f, 0.5f);
+        panelRT.anchorMax        = new Vector2(0.5f, 0.5f);
+        panelRT.pivot            = new Vector2(0.5f, 0.5f);
+        panelRT.sizeDelta        = new Vector2(720f, 840f);
+        panelRT.anchoredPosition = Vector2.zero;
+
+        // Aged worn-edge vignette overlay
+        AddInnerEdge(panel.transform);
+
+        // "Field Journal" heading
+        AddTitle(panel.transform);
+
+        // Thin rule below the title
+        AddDivider(panel.transform);
+
+        // Body text (single page at a time)
+        entryText = AddEntryText(panel.transform);
+
+        // Navigation arrows — stored for state management in RefreshDisplay
+        (leftButton,  leftButtonImage,  leftArrowLabel)  = AddArrowButton(panel.transform, isLeft: true);
+        (rightButton, rightButtonImage, rightArrowLabel) = AddArrowButton(panel.transform, isLeft: false);
+
+        // Wire click listeners exactly once each
+        leftButton.onClick.AddListener(()  => NavigatePage(-1));
+        rightButton.onClick.AddListener(() => NavigatePage(1));
+
+        // Page counter at the bottom
+        pageIndicator = AddPageIndicator(panel.transform);
+
+        return panel;
+    }
+
+    // Semi-transparent dark inset frame that simulates a worn, aged paper edge
+    private void AddInnerEdge(Transform parent)
+    {
+        GameObject obj = new GameObject("InnerEdge");
+        obj.transform.SetParent(parent, false);
+
+        Image img = obj.AddComponent<Image>();
+        img.color = new Color(0.08f, 0.04f, 0.01f, 0.20f);
+        // Stretch to fill, then pull in on all sides
+        RectTransform rt = obj.GetComponent<RectTransform>();
+        rt.anchorMin     = Vector2.zero;
+        rt.anchorMax     = Vector2.one;
+        rt.offsetMin     = new Vector2(10f,  10f);
+        rt.offsetMax     = new Vector2(-10f, -10f);
+    }
+
+    // Bold italic "Field Journal" heading anchored to the top of the panel
+    private void AddTitle(Transform parent)
+    {
+        GameObject obj = new GameObject("Title");
+        obj.transform.SetParent(parent, false);
+
+        TextMeshProUGUI t = obj.AddComponent<TextMeshProUGUI>();
+        t.text      = "Field Journal";
+        t.fontSize  = 34f;
+        t.fontStyle = FontStyles.Bold | FontStyles.Italic;
+        t.alignment = TextAlignmentOptions.Center;
+        t.color     = titleColor;
+        if (journalFont != null) t.font = journalFont;
+
+        RectTransform rt    = obj.GetComponent<RectTransform>();
+        rt.anchorMin        = new Vector2(0f, 1f);
+        rt.anchorMax        = new Vector2(1f, 1f);
+        rt.pivot            = new Vector2(0.5f, 1f);
+        rt.anchoredPosition = new Vector2(0f, -22f);
+        rt.sizeDelta        = new Vector2(-40f, 56f);
+    }
+
+    // 2px horizontal rule that separates the title from the entry body
+    private void AddDivider(Transform parent)
+    {
+        GameObject obj = new GameObject("Divider");
+        obj.transform.SetParent(parent, false);
+
+        Image img = obj.AddComponent<Image>();
+        img.color = new Color(0.12f, 0.07f, 0.02f, 0.55f);
+
+        RectTransform rt    = obj.GetComponent<RectTransform>();
+        rt.anchorMin        = new Vector2(0f, 1f);
+        rt.anchorMax        = new Vector2(1f, 1f);
+        rt.pivot            = new Vector2(0.5f, 1f);
+        rt.anchoredPosition = new Vector2(0f, -76f);
+        rt.sizeDelta        = new Vector2(-40f, 2f);
+    }
+
+    // Body text area — inset to leave room for the arrow buttons on each side
+    private TextMeshProUGUI AddEntryText(Transform parent)
+    {
+        GameObject obj = new GameObject("EntryText");
+        obj.transform.SetParent(parent, false);
+
+        TextMeshProUGUI t    = obj.AddComponent<TextMeshProUGUI>();
+        t.fontSize           = 36f;
+        t.lineSpacing        = 12f;
+        t.color              = inkColor;
+        t.alignment          = TextAlignmentOptions.Center;
+        t.enableWordWrapping = true;
+        if (journalFont != null) t.font = journalFont;
+
+        // 100px left/right margin clears the arrow buttons with breathing room
+        // 100px top clears title + divider; 90px bottom clears the page indicator
+        RectTransform rt = obj.GetComponent<RectTransform>();
+        rt.anchorMin     = Vector2.zero;
+        rt.anchorMax     = Vector2.one;
+        rt.offsetMin     = new Vector2(82f,  90f);
+        rt.offsetMax     = new Vector2(-82f, -100f);
+
+        return t;
+    }
+
+    // Creates one arrow button; isLeft=true produces the left/previous button
+    private (Button btn, Image img, TextMeshProUGUI label) AddArrowButton(Transform parent, bool isLeft)
+    {
+        GameObject obj = new GameObject(isLeft ? "LeftArrow" : "RightArrow");
+        obj.transform.SetParent(parent, false);
+
+        // Button background image — same rounded rect as the panel for visual consistency
+        Image img = obj.AddComponent<Image>();
+        img.color = buttonActiveColor;
+
+        Button btn        = obj.AddComponent<Button>();
+        btn.targetGraphic = img;
+
+        // Subtle highlight on hover/press; disabled appearance handled manually in RefreshDisplay
+        ColorBlock cb         = btn.colors;
+        cb.normalColor        = Color.white;
+        cb.highlightedColor   = new Color(1.00f, 0.95f, 0.80f, 1f);
+        cb.pressedColor       = new Color(0.75f, 0.70f, 0.55f, 1f);
+        cb.disabledColor      = Color.white; // RefreshDisplay sets img.color directly
+        cb.colorMultiplier    = 1f;
+        btn.colors            = cb;
+
+        // Anchor to the left or right edge of the panel, vertically centred
+        RectTransform rt = obj.GetComponent<RectTransform>();
+        rt.sizeDelta     = new Vector2(64f, 110f);
+
+        if (isLeft)
+        {
+            rt.anchorMin        = new Vector2(0f, 0.5f);
+            rt.anchorMax        = new Vector2(0f, 0.5f);
+            rt.pivot            = new Vector2(0f, 0.5f);
+            rt.anchoredPosition = new Vector2(14f, 0f);
+        }
+        else
+        {
+            rt.anchorMin        = new Vector2(1f, 0.5f);
+            rt.anchorMax        = new Vector2(1f, 0.5f);
+            rt.pivot            = new Vector2(1f, 0.5f);
+            rt.anchoredPosition = new Vector2(-14f, 0f);
+        }
+
+        // Arrow symbol as a child TextMeshProUGUI so it sits on top of the button image
+        GameObject labelObj = new GameObject("Label");
+        labelObj.transform.SetParent(obj.transform, false);
+
+        TextMeshProUGUI label = labelObj.AddComponent<TextMeshProUGUI>();
+        label.text      = isLeft ? "<" : ">";
+        label.fontSize  = 36f;
+        label.fontStyle = FontStyles.Bold;
+        label.alignment = TextAlignmentOptions.Center;
+        label.color     = inkColor;
+        if (journalFont != null) label.font = journalFont;
+
+        // Stretch label to fill the button so it centres automatically
+        RectTransform labelRT = labelObj.GetComponent<RectTransform>();
+        labelRT.anchorMin     = Vector2.zero;
+        labelRT.anchorMax     = Vector2.one;
+        labelRT.offsetMin     = Vector2.zero;
+        labelRT.offsetMax     = Vector2.zero;
+
+        return (btn, img, label);
+    }
+
+    // "Page X / Y unlocked" label anchored to the bottom of the panel
+    private TextMeshProUGUI AddPageIndicator(Transform parent)
+    {
+        GameObject obj = new GameObject("PageIndicator");
+        obj.transform.SetParent(parent, false);
+
+        TextMeshProUGUI t = obj.AddComponent<TextMeshProUGUI>();
+        t.fontSize  = 16f;
+        t.fontStyle = FontStyles.Italic;
+        t.alignment = TextAlignmentOptions.Center;
+        t.color     = new Color(inkColor.r, inkColor.g, inkColor.b, 0.70f);
+        if (journalFont != null) t.font = journalFont;
+
+        RectTransform rt    = obj.GetComponent<RectTransform>();
+        rt.anchorMin        = new Vector2(0f, 0f);
+        rt.anchorMax        = new Vector2(1f, 0f);
+        rt.pivot            = new Vector2(0.5f, 0f);
+        rt.anchoredPosition = new Vector2(0f, 16f);
+        rt.sizeDelta        = new Vector2(-40f, 32f);
+
+        return t;
+    }
+}

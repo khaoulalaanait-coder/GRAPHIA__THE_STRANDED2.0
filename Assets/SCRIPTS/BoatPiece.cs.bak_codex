@@ -1,0 +1,191 @@
+using System.Collections;
+using UnityEngine;
+using UnityEngine.UI;
+using UnityEngine.InputSystem;
+using TMPro;
+
+// Attach to each of the 5 boat piece prefabs AND to Piece_Engine in the scene
+public class BoatPiece : MonoBehaviour
+{
+    [SerializeField] private AudioClip collectSound;
+    [SerializeField] private float interactDistance = 3f;
+
+    [Header("Engine Piece")]
+    [SerializeField] private bool isEnginePiece;                    // Tick on Piece_Engine only
+    [SerializeField] private TMP_FontAsset journalFont;             // Assign Caveat-Regular SDF (same asset as JournalManager)
+
+    private bool playerNearby;
+    private bool collected;
+    private BoatPieceManager manager;
+    private Transform player;
+
+    private void Start()
+    {
+        // Large sphere trigger for proximity detection; does not disturb the existing mesh collider
+        SphereCollider trigger = gameObject.AddComponent<SphereCollider>();
+        trigger.isTrigger = true;
+        trigger.radius = 2f;
+
+        manager = FindFirstObjectByType<BoatPieceManager>();
+        FindPlayer();
+    }
+
+    private void Update()
+    {
+        if (collected)
+            return;
+
+        if (player == null)
+            FindPlayer();
+
+        if (player != null)
+            playerNearby = Vector3.Distance(transform.position, player.position) <= interactDistance;
+
+        if (!playerNearby || Keyboard.current == null)
+            return;
+
+        if (Keyboard.current.eKey.wasPressedThisFrame)
+            Collect();
+    }
+
+    private void Collect()
+    {
+        // Guard prevents re-entry if trigger fires again before SetActive(false) completes
+        if (collected)
+            return;
+
+        collected = true;
+
+        // PlayClipAtPoint spawns its own temporary AudioSource so the sound survives deactivation
+        if (collectSound != null)
+            AudioSource.PlayClipAtPoint(collectSound, transform.position);
+
+        if (manager != null)
+            manager.OnPieceCollected(isEnginePiece);
+
+        // Show dramatic message before hiding — only for the engine piece
+        if (isEnginePiece)
+            StartCoroutine(ShowEnginePopup());
+        else
+            gameObject.SetActive(false);
+    }
+
+    // ── Engine popup ──────────────────────────────────────────────────────────
+
+    // Builds the full-screen overlay, fades it in (1 s), holds (3 s), fades out, then hides the piece
+    private IEnumerator ShowEnginePopup()
+    {
+        Canvas canvas = BuildPopupCanvas();
+        CanvasGroup group = canvas.GetComponent<CanvasGroup>();
+
+        // Fade IN over 1 second
+        yield return Fade(group, 0f, 1f, 1f);
+
+        // Hold for 3 seconds
+        yield return new WaitForSeconds(3f);
+
+        // Fade OUT over 1 second
+        yield return Fade(group, 1f, 0f, 1f);
+
+        // Clean up canvas, then hide the piece
+        Destroy(canvas.gameObject);
+        gameObject.SetActive(false);
+    }
+
+    // Animates a CanvasGroup alpha from startAlpha to endAlpha over duration seconds
+    private IEnumerator Fade(CanvasGroup group, float startAlpha, float endAlpha, float duration)
+    {
+        float elapsed = 0f;
+        while (elapsed < duration)
+        {
+            elapsed += Time.deltaTime;
+            group.alpha = Mathf.Lerp(startAlpha, endAlpha, elapsed / duration);
+            yield return null;
+        }
+        group.alpha = endAlpha;
+    }
+
+    // Creates the popup Canvas entirely in code — no prefab needed
+    private Canvas BuildPopupCanvas()
+    {
+        var go = new GameObject("EnginePopupCanvas");
+
+        var canvas = go.AddComponent<Canvas>();
+        canvas.renderMode   = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 200; // Above map, journal, HUD
+
+        var scaler = go.AddComponent<CanvasScaler>();
+        scaler.uiScaleMode         = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(1920f, 1080f);
+        scaler.matchWidthOrHeight  = 0.5f;
+
+        go.AddComponent<GraphicRaycaster>();
+
+        // CanvasGroup drives the fade — alpha starts at 0
+        var group = go.AddComponent<CanvasGroup>();
+        group.alpha          = 0f;
+        group.blocksRaycasts = false; // Don't swallow clicks during the popup
+
+        // Full-screen semi-transparent black overlay
+        var overlayGO = new GameObject("Overlay");
+        overlayGO.transform.SetParent(go.transform, false);
+        var overlay = overlayGO.AddComponent<Image>();
+        overlay.color = new Color(0f, 0f, 0f, 0.82f);
+        var overlayRT = overlay.rectTransform;
+        overlayRT.anchorMin = Vector2.zero;
+        overlayRT.anchorMax = Vector2.one;
+        overlayRT.offsetMin = Vector2.zero;
+        overlayRT.offsetMax = Vector2.zero;
+
+        // Centred text — Caveat font if assigned, TMP default otherwise
+        var textGO = new GameObject("MessageText");
+        textGO.transform.SetParent(go.transform, false);
+        var tmp       = textGO.AddComponent<TextMeshProUGUI>();
+        tmp.text      = "The engine is yours...\nDon't end up like me.";
+        tmp.fontSize  = 36;
+        tmp.color     = Color.white;
+        tmp.alignment = TextAlignmentOptions.Center;
+        if (journalFont != null) tmp.font = journalFont;
+
+        var textRT        = tmp.rectTransform;
+        textRT.anchorMin  = new Vector2(0.15f, 0.35f);
+        textRT.anchorMax  = new Vector2(0.85f, 0.65f);
+        textRT.offsetMin  = Vector2.zero;
+        textRT.offsetMax  = Vector2.zero;
+
+        return canvas;
+    }
+
+    private void OnTriggerEnter(Collider other)
+    {
+        if (other.CompareTag("Player"))
+            playerNearby = true;
+    }
+
+    private void OnTriggerExit(Collider other)
+    {
+        if (other.CompareTag("Player"))
+            playerNearby = false;
+    }
+
+    private void OnGUI()
+    {
+        if (!playerNearby || collected)
+            return;
+
+        GUIStyle style = new GUIStyle { fontSize = 22, alignment = TextAnchor.MiddleCenter, fontStyle = FontStyle.Bold };
+        style.normal.textColor = Color.white;
+
+        GUI.Label(
+            new Rect(Screen.width * 0.5f - 140f, Screen.height - 115f, 280f, 38f),
+            "[ E ] Collect Piece",
+            style);
+    }
+
+    private void FindPlayer()
+    {
+        GameObject playerObject = GameObject.FindGameObjectWithTag("Player");
+        if (playerObject != null)
+            player = playerObject.transform;
+    }
+}

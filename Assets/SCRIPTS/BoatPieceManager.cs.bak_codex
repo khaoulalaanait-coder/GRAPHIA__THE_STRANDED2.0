@@ -1,0 +1,196 @@
+using UnityEngine;
+using UnityEngine.UI;
+using TMPro;
+
+// Attach to an empty GameObject called BoatPieceManager in the scene
+public class BoatPieceManager : MonoBehaviour
+{
+    [SerializeField] private Transform[] spawnZones;    // 5 zone transforms (SpawnZone_Beach, etc.)
+    [SerializeField] private GameObject[] piecePrefabs; // 5 boat piece prefabs
+    [SerializeField] private bool randomizePieceZones = false;
+    [SerializeField] private GameObject enginePiece;    // Piece_Engine already in the scene
+    [SerializeField] private TMP_FontAsset pieceCounterFont;
+
+    private const int totalPieces = 4;
+    private int collectedCount;
+    private bool engineCollected;
+    private bool notifiedEngineLastPiece;
+    private bool engineRevealed;
+    private TextMeshProUGUI pieceCounterLabel;
+
+    private void Start()
+    {
+        // Engine stays hidden until the stone puzzle is solved
+        if (enginePiece != null)
+            enginePiece.SetActive(false);
+
+        SpawnPieces();
+        BuildPieceCounterUi();
+        collectedCount = Mathf.Clamp(PlayerData.boatPiecesCollected, 0, totalPieces);
+        UpdatePieceCounterUi();
+    }
+
+    // Instantiates one prefab per spawn zone, shuffled so placement is random each run
+    private void SpawnPieces()
+    {
+        if (spawnZones == null || piecePrefabs == null)
+            return;
+
+        int regularPieceCount = totalPieces - 1;
+        int count = Mathf.Min(spawnZones.Length, piecePrefabs.Length, regularPieceCount);
+        GameObject[] piecesToSpawn = randomizePieceZones ? ShuffledCopy(piecePrefabs) : piecePrefabs;
+
+        for (int i = 0; i < count; i++)
+        {
+            if (spawnZones[i] == null || piecesToSpawn[i] == null)
+                continue;
+
+            Vector3 spawnPos = SnapToGround(spawnZones[i].position);
+            Instantiate(piecesToSpawn[i], spawnPos, Quaternion.identity);
+        }
+    }
+
+    // Fires a ray from above a random point within the zone radius to land on terrain
+    private Vector3 SnapToGround(Vector3 zoneCenter)
+    {
+        Vector2 circle = Random.insideUnitCircle * 5f;
+        Vector3 rayOrigin = zoneCenter + new Vector3(circle.x, 20f, circle.y);
+
+        if (Physics.Raycast(rayOrigin, Vector3.down, out RaycastHit hit, 50f))
+            return hit.point;
+
+        return zoneCenter;
+    }
+
+    private GameObject[] ShuffledCopy(GameObject[] source)
+    {
+        GameObject[] copy = (GameObject[])source.Clone();
+        for (int i = copy.Length - 1; i > 0; i--)
+        {
+            int j = Random.Range(0, i + 1);
+            GameObject temp = copy[i];
+            copy[i] = copy[j];
+            copy[j] = temp;
+        }
+        return copy;
+    }
+
+    // Called by CrystalConnectionManager when the stone puzzle is solved
+    public void OnStonePuzzleComplete()
+    {
+        if (engineRevealed)
+            return;
+
+        engineRevealed = true;
+
+        if (enginePiece != null)
+            enginePiece.SetActive(true);
+
+        Debug.Log("Stone puzzle solved — Engine piece revealed!");
+    }
+
+    // Called by BoatPiece when a piece is collected
+    public void OnPieceCollected(bool isEnginePiece)
+    {
+        collectedCount++;
+        PlayerData.boatPiecesCollected = Mathf.Max(PlayerData.boatPiecesCollected, collectedCount);
+        if (isEnginePiece)
+            engineCollected = true;
+
+        Debug.Log($"Boat pieces: {collectedCount}/{totalPieces}");
+        UpdatePieceCounterUi();
+
+        // Reveal the storm timer UI once only when the engine is the final missing piece.
+        if (!notifiedEngineLastPiece && collectedCount >= totalPieces - 1 && !engineCollected && PuzzleTimer.instance != null)
+        {
+            notifiedEngineLastPiece = true;
+            PuzzleTimer.instance.OnEngineIsLastPiece();
+        }
+
+        // Reveal the next journal entry for each piece found
+        if (JournalManager.instance != null)
+            JournalManager.instance.UnlockNextPage();
+        else
+            PlayerData.UnlockJournalPage(PlayerData.journalUnlockedPages + 1);
+
+        if (collectedCount >= totalPieces)
+            Debug.Log("All boat pieces collected. Return to the boat with fuel.");
+    }
+
+    private void BuildPieceCounterUi()
+    {
+        GameObject canvasObj = new GameObject("PieceCounterCanvas");
+        canvasObj.transform.SetParent(transform, false);
+
+        Canvas canvas = canvasObj.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 20;
+
+        CanvasScaler scaler = canvasObj.AddComponent<CanvasScaler>();
+        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(1920f, 1080f);
+        scaler.matchWidthOrHeight = 0.5f;
+
+        canvasObj.AddComponent<GraphicRaycaster>();
+
+        GameObject panelObj = new GameObject("PieceCounterPanel");
+        panelObj.transform.SetParent(canvasObj.transform, false);
+        Image panelImage = panelObj.AddComponent<Image>();
+        panelImage.color = new Color(0.769f, 0.635f, 0.396f, 0.93f); // #C4A265 parchment
+
+        RectTransform panelRt = panelObj.GetComponent<RectTransform>();
+        panelRt.anchorMin = new Vector2(0f, 1f);
+        panelRt.anchorMax = new Vector2(0f, 1f);
+        panelRt.pivot = new Vector2(0f, 1f);
+        panelRt.anchoredPosition = new Vector2(24f, -24f);
+        panelRt.sizeDelta = new Vector2(250f, 56f);
+
+        GameObject edgeObj = new GameObject("InnerEdge");
+        edgeObj.transform.SetParent(panelObj.transform, false);
+        Image edgeImage = edgeObj.AddComponent<Image>();
+        edgeImage.color = new Color(0.08f, 0.04f, 0.01f, 0.20f);
+
+        RectTransform edgeRt = edgeObj.GetComponent<RectTransform>();
+        edgeRt.anchorMin = Vector2.zero;
+        edgeRt.anchorMax = Vector2.one;
+        edgeRt.offsetMin = new Vector2(3f, 3f);
+        edgeRt.offsetMax = new Vector2(-3f, -3f);
+
+        GameObject labelObj = new GameObject("PieceCounterLabel");
+        labelObj.transform.SetParent(panelObj.transform, false);
+        pieceCounterLabel = labelObj.AddComponent<TextMeshProUGUI>();
+        pieceCounterLabel.fontSize = 28f;
+        pieceCounterLabel.alignment = TextAlignmentOptions.Center;
+        pieceCounterLabel.color = new Color(0.13f, 0.07f, 0.02f, 1f);
+
+        if (pieceCounterFont == null && JournalManager.instance != null)
+            pieceCounterFont = JournalManager.instance.JournalFont;
+
+        if (pieceCounterFont != null)
+            pieceCounterLabel.font = pieceCounterFont;
+
+        RectTransform labelRt = labelObj.GetComponent<RectTransform>();
+        labelRt.anchorMin = Vector2.zero;
+        labelRt.anchorMax = Vector2.one;
+        labelRt.offsetMin = new Vector2(10f, 6f);
+        labelRt.offsetMax = new Vector2(-10f, -6f);
+    }
+
+    private void UpdatePieceCounterUi()
+    {
+        if (pieceCounterLabel == null)
+            return;
+
+        pieceCounterLabel.text = $"Boat Pieces: {collectedCount} / {totalPieces}";
+    }
+
+    public int CollectedCount
+    {
+        get { return collectedCount; }
+    }
+
+    public bool HasAllPieces
+    {
+        get { return collectedCount >= totalPieces; }
+    }
+}

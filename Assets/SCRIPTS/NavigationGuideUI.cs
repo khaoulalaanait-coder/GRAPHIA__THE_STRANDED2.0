@@ -1,0 +1,156 @@
+using System.Collections;
+using TMPro;
+using UnityEngine;
+using UnityEngine.UI;
+
+public class NavigationGuideUI : MonoBehaviour
+{
+    public static NavigationGuideUI instance;
+
+    [SerializeField] private TMP_FontAsset uiFont;
+    [SerializeField] private bool showCurrentClue = true;
+    [SerializeField] private float zonePopupDuration = 2f;
+
+    private TextMeshProUGUI clueText;
+    private TextMeshProUGUI zoneText;
+    private CanvasGroup zoneGroup;
+    private Coroutine zoneRoutine;
+
+    private void Awake()
+    {
+        if (instance != null && instance != this)
+        {
+            Destroy(gameObject);
+            return;
+        }
+
+        instance = this;
+        BuildUI();
+    }
+
+    private void Update()
+    {
+        if (!showCurrentClue || clueText == null)
+            return;
+
+        string clue = JournalManager.instance != null
+            ? JournalManager.instance.GetCurrentClue()
+            : GetFallbackClue();
+
+        clueText.text = "Current Clue:\n" + clue;
+    }
+
+    public void ShowZone(string zoneName)
+    {
+        if (string.IsNullOrWhiteSpace(zoneName) || zoneGroup == null || zoneText == null)
+            return;
+
+        if (zoneRoutine != null)
+            StopCoroutine(zoneRoutine);
+
+        zoneRoutine = StartCoroutine(ShowZoneRoutine(zoneName));
+    }
+
+    public static void ShowZoneName(string zoneName)
+    {
+        if (instance == null)
+        {
+            GameObject guideObject = new GameObject("NavigationGuideUI");
+            instance = guideObject.AddComponent<NavigationGuideUI>();
+        }
+
+        if (instance != null)
+            instance.ShowZone(zoneName);
+    }
+
+    private IEnumerator ShowZoneRoutine(string zoneName)
+    {
+        zoneText.text = zoneName.ToUpperInvariant();
+        zoneGroup.alpha = 1f;
+
+        yield return new WaitForSeconds(zonePopupDuration);
+
+        float elapsed = 0f;
+        while (elapsed < 0.5f)
+        {
+            elapsed += Time.deltaTime;
+            zoneGroup.alpha = Mathf.Lerp(1f, 0f, elapsed / 0.5f);
+            yield return null;
+        }
+
+        zoneGroup.alpha = 0f;
+    }
+
+    private void BuildUI()
+    {
+        GameObject canvasObject = new GameObject("NavigationGuideCanvas");
+        canvasObject.transform.SetParent(transform, false);
+
+        Canvas canvas = canvasObject.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 80;
+
+        CanvasScaler scaler = canvasObject.AddComponent<CanvasScaler>();
+        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(1920f, 1080f);
+        scaler.matchWidthOrHeight = 0.5f;
+
+        canvasObject.AddComponent<GraphicRaycaster>();
+
+        clueText = CreateText(canvasObject.transform, "CurrentClue", 32f, TextAlignmentOptions.BottomLeft);
+        RectTransform clueRect = clueText.rectTransform;
+        clueRect.anchorMin = new Vector2(0f, 0f);
+        clueRect.anchorMax = new Vector2(0f, 0f);
+        clueRect.pivot = new Vector2(0f, 0f);
+        clueRect.anchoredPosition = new Vector2(28f, 210f);
+        clueRect.sizeDelta = new Vector2(860f, 230f);
+        clueText.color = new Color(1f, 0.95f, 0.78f, 0.9f);
+
+        GameObject zoneObject = new GameObject("ZonePopup");
+        zoneObject.transform.SetParent(canvasObject.transform, false);
+        zoneGroup = zoneObject.AddComponent<CanvasGroup>();
+        zoneGroup.alpha = 0f;
+
+        zoneText = CreateText(zoneObject.transform, "ZoneName", 52f, TextAlignmentOptions.Center);
+        RectTransform zoneRect = zoneText.rectTransform;
+        zoneRect.anchorMin = new Vector2(0.5f, 0.78f);
+        zoneRect.anchorMax = new Vector2(0.5f, 0.78f);
+        zoneRect.pivot = new Vector2(0.5f, 0.5f);
+        zoneRect.anchoredPosition = Vector2.zero;
+        zoneRect.sizeDelta = new Vector2(700f, 90f);
+        zoneText.color = new Color(1f, 0.88f, 0.35f, 1f);
+    }
+
+    private TextMeshProUGUI CreateText(Transform parent, string objectName, float fontSize, TextAlignmentOptions alignment)
+    {
+        GameObject textObject = new GameObject(objectName);
+        textObject.transform.SetParent(parent, false);
+
+        TextMeshProUGUI text = textObject.AddComponent<TextMeshProUGUI>();
+        text.fontSize = fontSize;
+        text.alignment = alignment;
+        text.enableWordWrapping = true;
+        text.lineSpacing = 8f;
+        text.raycastTarget = false;
+
+        if (uiFont != null)
+            text.font = uiFont;
+
+        return text;
+    }
+
+    private string GetFallbackClue()
+    {
+        switch (Mathf.Clamp(PlayerData.journalUnlockedPages, 1, 7))
+        {
+            case 2: return "I hid the rudder where the trees swallow the light";
+            case 3: return "The mast rolled down toward the rocky cliff side";
+            case 4: return "The plank is near the old stone ruins, half buried";
+            case 5: return "The engine sank into the cursed stones to the north. No two connected stones can share the same color.";
+            case 6: return "The boat is ready. Return with fuel before the storm takes you.";
+            case 7: return "The storm is here. Leave now.";
+            default: return "The island is not done with you. Start at the tower: find the fuel hidden there. The boat is broken, and its pieces are scattered around the island. Fuel first, then the pieces, then the way out.";
+        }
+    }
+}
+
